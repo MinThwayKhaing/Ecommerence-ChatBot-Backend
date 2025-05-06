@@ -80,59 +80,65 @@ const validateLineWebhook = (req: any, res: any, next: any) => {
   }
 };
 
-app.post('/user/line', validateLineWebhook, async (req : any , res : any) => {
-  const event = req.lineEvent;
-  const replyToken = event.replyToken;
-
-  if (event.type === 'message' && event.message.type === 'text') {
-    const receivedText = event.message.text;
-
-    // ✅ Send reply once
-    await replyToUser(replyToken, `You said: ${receivedText}`);
-
-    return res.status(200).json({
-      status: 'replied',
-      userId: event.source.userId,
-      text: event.message.text,
-    });
-  }
-
-  // For non-message events, just return 200
-  res.status(200).json({
-    status: 'ignored',
-    eventType: event.type,
-  });
-});
-
-
-
 const LINE_CHANNEL_ACCESS_TOKEN = '6jBuSgWaV7deKdQx30E1X4qs57vH2oNZ79sZUuujgpD/WzT+ReXXhs5zQbNHwVFNHzrRn4caNbQN+yEAVktovXPZuRx+txPFFD2sknsNjcl6h5kgin2q7aPa/T19fPujuVS6Z5xyuATijYqLWW5GlwdB04t89/1O/w1cDnyilFU='; // 🔒 Replace this securely
+const RASA_ENDPOINT = 'http://localhost:5005/webhooks/rest/webhook';
 
 const replyToUser = async (replyToken: string, text: string) => {
   try {
-    const response = await axios.post(
+    await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       {
         replyToken,
-        messages: [
-          {
-            type: 'text',
-            text,
-          },
-        ],
+        messages: [{ type: 'text', text }]
       },
       {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
-        },
+          Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+        }
       }
     );
-    console.log('Reply sent:', response.data);
   } catch (error: any) {
-    console.error('Failed to send reply:', error.response?.data || error.message);
+    console.error('Reply error:', error.response?.data || error.message);
   }
 };
+app.post('/user/line', async (req : any , res : any) => {
+  const event = req.body.events?.[0];
+  if (!event || !event.message?.text) return res.sendStatus(200);
+
+  const receivedText = event.message.text;
+  const replyToken = event.replyToken;
+
+  try {
+    const rasaRes = await axios.post(RASA_ENDPOINT, {
+      sender: event.source.userId,
+      message: receivedText
+    });
+
+    const rasaMessages = rasaRes.data;
+    if (rasaMessages.length === 0) {
+      await replyToUser(replyToken, "Sorry, I didn't understand.");
+    } else {
+      for (const message of rasaMessages) {
+        if (message.text) {
+          await replyToUser(replyToken, message.text);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('Rasa error:', err.response?.data || err.message);
+    await replyToUser(replyToken, "There was an error processing your message.");
+  }
+
+  res.sendStatus(200);
+});
+
+
+
+
+
+
+
 // Error Handler
 app.use((err: any, req: any, res: any, next: any) => {
   console.error('Server error:', err);
