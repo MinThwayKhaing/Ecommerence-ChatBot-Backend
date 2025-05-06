@@ -1,5 +1,6 @@
 import express from 'express';
 import bodyParser from 'body-parser';
+import axios from 'axios';
 
 const app = express();
 const PORT = 3000;
@@ -79,25 +80,59 @@ const validateLineWebhook = (req: any, res: any, next: any) => {
   }
 };
 
-// LINE Webhook Handler
-app.post('/user/line', validateLineWebhook, (req : any, res : any) => {
+app.post('/user/line', validateLineWebhook, async (req : any , res : any) => {
   const event = req.lineEvent;
+  const replyToken = event.replyToken;
 
   if (event.type === 'message' && event.message.type === 'text') {
-    return res.json({
-      status: 'success',
+    const receivedText = event.message.text;
+
+    // ✅ Send reply once
+    await replyToUser(replyToken, `You said: ${receivedText}`);
+
+    return res.status(200).json({
+      status: 'replied',
       userId: event.source.userId,
       text: event.message.text,
-      replyToken: event.replyToken
     });
   }
 
-  res.json({
+  // For non-message events, just return 200
+  res.status(200).json({
     status: 'ignored',
-    eventType: event.type
+    eventType: event.type,
   });
 });
 
+
+
+const LINE_CHANNEL_ACCESS_TOKEN = '6jBuSgWaV7deKdQx30E1X4qs57vH2oNZ79sZUuujgpD/WzT+ReXXhs5zQbNHwVFNHzrRn4caNbQN+yEAVktovXPZuRx+txPFFD2sknsNjcl6h5kgin2q7aPa/T19fPujuVS6Z5xyuATijYqLWW5GlwdB04t89/1O/w1cDnyilFU='; // 🔒 Replace this securely
+
+const replyToUser = async (replyToken: string, text: string) => {
+  try {
+    const response = await axios.post(
+      'https://api.line.me/v2/bot/message/reply',
+      {
+        replyToken,
+        messages: [
+          {
+            type: 'text',
+            text,
+          },
+        ],
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+      }
+    );
+    console.log('Reply sent:', response.data);
+  } catch (error: any) {
+    console.error('Failed to send reply:', error.response?.data || error.message);
+  }
+};
 // Error Handler
 app.use((err: any, req: any, res: any, next: any) => {
   console.error('Server error:', err);
