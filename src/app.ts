@@ -1,13 +1,17 @@
 import express from 'express';
 import bodyParser from 'body-parser';
 import axios from 'axios';
+import chalk from 'chalk';
+import dayjs from 'dayjs';
 
 const app = express();
 const PORT = 3000;
 
-const LINE_CHANNEL_ACCESS_TOKEN = '6jBuSgWaV7deKdQx30E1X4qs57vH2oNZ79sZUuujgpD/WzT+ReXXhs5zQbNHwVFNHzrRn4caNbQN+yEAVktovXPZuRx+txPFFD2sknsNjcl6h5kgin2q7aPa/T19fPujuVS6Z5xyuATijYqLWW5GlwdB04t89/1O/w1cDnyilFU='; // 🔒 Replace with secure environment variable
+const LINE_CHANNEL_ACCESS_TOKEN = 'Or2pu2Rd1w+JJdxy0AtnPZ0i7z88uq2qH683+Id3sQx0mqI+Fd2vWn2ES5Fh9IDrUAQyPgSPqKjehuC0T/CQMy2sGKATVwDwNEs4D+9GQjND8IwlMbwYjUG0eoS9xzifVaV0ctV2TSJQVhj82F1X8QdB04t89/1O/w1cDnyilFU='; // 🔒 Replace with secure environment variable
 const RASA_ENDPOINT = 'http://localhost:5005/webhooks/rest/webhook';
-
+const FACEBOOK_PAGE_ACCESS_TOKEN='EAAQLPtfjYSEBO9LJHuh6zjqqCEBIqhaPFIpm9k3QnOYYDuxRMidU2qxVCH2t3fQRmZCSEwUUhZAZBLffQz8of1oP0BhwKHxZCaKBHbdlnBuqFBN2VsiGP246EUyx9bWI7qkdEZBDSaPsdCVcrqG4WZArwZCOa5Qu9KwRaZBVYFRVOh2TbPLZAZAeCZC0WcypuY8'
+// const FACEBOOK_VERIFY_TOKEN = 'EAAQLPtfjYSEBOZB19qpCieKeWulSeUSuc7aB2IAti9S3KNlWszdsqaUox0gB2kZA2m32SELW1OWhkBuAzm8oZBi8bSOZBfwkr9LokurMIHbvPDOYEYF8ofuE56xKkE3MzN3U3m6KZCzV3IHNNoWe3TZA7s6I4yEkhZAT8rZCK2ZCvY0s8gsqF5T96P7dtxjzjHz8k'; 
+const FACEBOOK_VERIFY_TOKEN = 'my_super_secret_token_123'
 declare global {
   namespace Express {
     interface Request {
@@ -22,13 +26,117 @@ app.use(bodyParser.json({
   }
 }));
 
-// Middleware to log requests
 app.use((req, res, next) => {
-  console.log(`Incoming ${req.method} ${req.url}`);
-  console.log('Headers:', req.headers);
-  console.log('Raw body:', req.rawBody);
+  const timestamp = dayjs().format('YYYY-MM-DD HH:mm:ss.SSS');
+  const method = chalk.cyan(req.method);
+  const url = chalk.green(req.url);
+  const status = chalk.bold.yellow('→ waiting...');
+  
+  console.log(`${chalk.gray(timestamp)} ${method} ${url} ${status}`);
   next();
 });
+
+app.use(bodyParser.json());
+
+// Verify token endpoint (GET)
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  // Check if verification tokens match
+  if (mode === 'subscribe' && token === FACEBOOK_VERIFY_TOKEN) {
+    console.log('Webhook verified!');
+    res.status(200).send(challenge);
+  } else {
+    console.log('Verification failed: Invalid token or mode');
+    res.sendStatus(403); // Reject if tokens don't match
+  }
+});
+
+app.post('/webhook', async (req, res) => {
+  const body = req.body;
+
+  if (body.object === 'page') {
+    for (const entry of body.entry) {
+      for (const event of entry.messaging) {
+        const senderId = event.sender.id;
+
+        if (event.message && event.message.text) {
+          const userMessage = event.message.text;
+          console.log('✅ Received message from user:', userMessage);
+
+          try {
+            // Send user's message to Rasa
+            const rasaResponse = await axios.post(RASA_ENDPOINT, {
+              sender: senderId,
+              message: userMessage
+            });
+
+            const rasaText = rasaResponse.data?.[0]?.text || "I'm not sure how to respond to that.";
+            let messageToSend;
+
+            // Try to parse as product JSON if includes "products"
+            if (rasaText.includes('"products"')) {
+              try {
+                const parsed = JSON.parse(rasaText);
+                const elements = parsed.products.map((product: any) => ({
+                  title: product.name,
+                  subtitle: `Availability: ${product.availability}\nPrice: $${product.price}`,
+                  image_url: `https://via.placeholder.com/150?text=${encodeURIComponent(product.name)}`,
+                  buttons: [
+                    {
+                      type: "postback",
+                      title: "Order Now",
+                      payload: `ORDER_${product.id}`
+                    }
+                  ]
+                }));
+
+                messageToSend = {
+                  attachment: {
+                    type: "template",
+                    payload: {
+                      template_type: "generic",
+                      elements
+                    }
+                  }
+                };
+              } catch (parseErr) {
+                console.error('❌ Error parsing product JSON:', parseErr);
+                messageToSend = { text: "Sorry, something went wrong displaying the products." };
+              }
+            } else {
+              // Fallback to plain text message
+              messageToSend = { text: rasaText };
+            }
+
+            // Send message to Facebook Messenger
+            await axios.post(
+              `https://graph.facebook.com/v12.0/me/messages?access_token=${FACEBOOK_PAGE_ACCESS_TOKEN}`,
+              {
+                recipient: { id: senderId },
+                message: messageToSend
+              }
+            );
+
+            console.log('🤖 Replied with:', messageToSend);
+          } catch (err: any) {
+            console.error('❌ Error sending message:', err.response?.data || err.message);
+          }
+        } else {
+          console.log('⚠️ Non-text or unknown event:', event);
+        }
+      }
+    }
+
+    res.sendStatus(200); // Respond to Facebook to avoid re-sending
+  } else {
+    res.sendStatus(404);
+  }
+});
+
+
 
 // Reply with plain text
 const replyToUser = async (replyToken: string, text: string) => {
@@ -141,6 +249,10 @@ const replyWithProductList = async (products: any[], replyToken: string) => {
     console.error('Flex message error:', error.response?.data || error.message);
   }
 };
+
+const LINE_SHOP_API = 'https://api.line.me/shop/v2/items'; // LINE Shop API endpoint
+
+
 
 app.post('/user/line', async (req, res) => {
   const events = req.body.events;
